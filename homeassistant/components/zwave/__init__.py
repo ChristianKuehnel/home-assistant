@@ -35,7 +35,13 @@ from . import workaround
 from .discovery_schemas import DISCOVERY_SCHEMAS
 from .util import check_node_schema, check_value_schema, node_name
 
-REQUIREMENTS = ['pydispatcher==2.0.5', 'python_openzwave==0.4.0.35']
+# TODO: revert this change before merging!!!!
+# This is just a workaround until the changes in the openzwave library were merged!
+# The original string was:
+#  REQUIREMENTS = ['pydispatcher==2.0.5', 'python_openzwave==0.4.0.35']
+REQUIREMENTS = ['pydispatcher==2.0.5',
+                'https://github.com/ChristianKuehnel/python-openzwave/archive/master.zip#python_openzwave==0.4.0.35']
+
 
 _LOGGER = logging.getLogger(__name__)
 
