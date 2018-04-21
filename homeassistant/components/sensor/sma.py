@@ -1,4 +1,5 @@
-"""SMA Solar Webconnect interface.
+"""
+SMA Solar Webconnect interface.
 
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/sensor.sma/
@@ -11,13 +12,14 @@ import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.const import (
-    EVENT_HOMEASSISTANT_STOP, CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL)
+    EVENT_HOMEASSISTANT_STOP, CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL,
+    CONF_SSL)
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
 
-REQUIREMENTS = ['pysma==0.1.3']
+REQUIREMENTS = ['pysma==0.2']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ def _check_sensor_schema(conf):
 
 PLATFORM_SCHEMA = vol.All(PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): str,
+    vol.Optional(CONF_SSL, default=False): cv.boolean,
     vol.Required(CONF_PASSWORD): str,
     vol.Optional(CONF_GROUP, default=GROUPS[0]): vol.In(GROUPS),
     vol.Required(CONF_SENSORS): vol.Schema({cv.slug: cv.ensure_list}),
@@ -65,14 +68,14 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     """Set up SMA WebConnect sensor."""
     import pysma
 
-    # sensor_defs from the library
+    # Sensor_defs from the library
     sensor_defs = dict(zip(SENSOR_OPTIONS, [
         (pysma.KEY_CURRENT_CONSUMPTION_W, 'W', 1),
         (pysma.KEY_CURRENT_POWER_W, 'W', 1),
         (pysma.KEY_TOTAL_CONSUMPTION_KWH, 'kWh', 1000),
         (pysma.KEY_TOTAL_YIELD_KWH, 'kWh', 1000)]))
 
-    # sensor_defs from the custom config
+    # Sensor_defs from the custom config
     for name, prop in config[CONF_CUSTOM].items():
         if name in sensor_defs:
             _LOGGER.warning("Custom sensor %s replace built-in sensor", name)
@@ -96,8 +99,11 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     session = async_get_clientsession(hass)
     grp = {GROUP_INSTALLER: pysma.GROUP_INSTALLER,
            GROUP_USER: pysma.GROUP_USER}[config[CONF_GROUP]]
-    sma = pysma.SMA(session, config[CONF_HOST], config[CONF_PASSWORD],
-                    group=grp)
+
+    url = "http{}://{}".format(
+        "s" if config[CONF_SSL] else "", config[CONF_HOST])
+
+    sma = pysma.SMA(session, url, config[CONF_PASSWORD], group=grp)
 
     # Ensure we logout on shutdown
     @asyncio.coroutine

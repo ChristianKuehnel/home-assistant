@@ -1,7 +1,7 @@
 """
 Support for Volvo heater.
 
-This platform uses the Telldus Live online service.
+This platform uses the Volvo online service.
 
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/switch.volvooncall/
@@ -15,7 +15,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup Tellstick switches."""
+    """Set up Tellstick switches."""
     if discovery_info is None:
         return
     add_devices([VolvoSwitch(hass, *discovery_info)])

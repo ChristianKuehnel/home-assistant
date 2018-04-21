@@ -6,6 +6,9 @@ https://home-assistant.io/components/media_player.onkyo/
 """
 import logging
 
+# pylint: disable=unused-import
+from typing import List  # noqa: F401
+
 import voluptuous as vol
 
 from homeassistant.components.media_player import (
@@ -14,12 +17,12 @@ from homeassistant.components.media_player import (
 from homeassistant.const import (STATE_OFF, STATE_ON, CONF_HOST, CONF_NAME)
 import homeassistant.helpers.config_validation as cv
 
-REQUIREMENTS = ['https://github.com/danieljkemp/onkyo-eiscp/archive/'
-                'python3.zip#onkyo-eiscp==0.9.2']
+REQUIREMENTS = ['onkyo-eiscp==1.2.4']
 
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SOURCES = 'sources'
+CONF_ZONE2 = 'zone2'
 
 DEFAULT_NAME = 'Onkyo Receiver'
 
@@ -38,11 +41,12 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_SOURCES, default=DEFAULT_SOURCES):
         {cv.string: cv.string},
+    vol.Optional(CONF_ZONE2, default=False): cv.boolean,
 })
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the Onkyo platform."""
+    """Set up the Onkyo platform."""
     import eiscp
     from eiscp import eISCP
 
@@ -51,18 +55,26 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     if CONF_HOST in config and host not in KNOWN_HOSTS:
         try:
-            hosts.append(OnkyoDevice(eiscp.eISCP(host),
-                                     config.get(CONF_SOURCES),
-                                     name=config.get(CONF_NAME)))
+            hosts.append(OnkyoDevice(
+                eiscp.eISCP(host), config.get(CONF_SOURCES),
+                name=config.get(CONF_NAME)))
             KNOWN_HOSTS.append(host)
+
+            # Add Zone2 if configured
+            if config.get(CONF_ZONE2):
+                _LOGGER.debug("Setting up zone 2")
+                hosts.append(OnkyoDeviceZone2(eiscp.eISCP(host),
+                                              config.get(CONF_SOURCES),
+                                              name=config.get(CONF_NAME) +
+                                              " Zone 2"))
         except OSError:
-            _LOGGER.error('Unable to connect to receiver at %s.', host)
+            _LOGGER.error("Unable to connect to receiver at %s", host)
     else:
         for receiver in eISCP.discover():
             if receiver.host not in KNOWN_HOSTS:
                 hosts.append(OnkyoDevice(receiver, config.get(CONF_SOURCES)))
                 KNOWN_HOSTS.append(receiver.host)
-    add_devices(hosts)
+    add_devices(hosts, True)
 
 
 class OnkyoDevice(MediaPlayerDevice):
@@ -80,7 +92,6 @@ class OnkyoDevice(MediaPlayerDevice):
         self._source_list = list(sources.values())
         self._source_mapping = sources
         self._reverse_mapping = {value: key for key, value in sources.items()}
-        self.update()
 
     def command(self, command):
         """Run an eiscp command and catch connection errors."""
@@ -89,16 +100,17 @@ class OnkyoDevice(MediaPlayerDevice):
         except (ValueError, OSError, AttributeError, AssertionError):
             if self._receiver.command_socket:
                 self._receiver.command_socket = None
-                _LOGGER.info('Resetting connection to %s.', self._name)
+                _LOGGER.info("Resetting connection to %s", self._name)
             else:
-                _LOGGER.info('%s is disconnected. Attempting to reconnect.',
+                _LOGGER.info("%s is disconnected. Attempting to reconnect",
                              self._name)
             return False
         return result
 
     def update(self):
-        """Get the latest details from the device."""
+        """Get the latest state from the device."""
         status = self.command('system-power query')
+
         if not status:
             return
         if status[1] == 'on':
@@ -106,9 +118,11 @@ class OnkyoDevice(MediaPlayerDevice):
         else:
             self._pwstate = STATE_OFF
             return
+
         volume_raw = self.command('volume query')
         mute_raw = self.command('audio-muting query')
         current_source_raw = self.command('input-selector query')
+
         if not (volume_raw and mute_raw and current_source_raw):
             return
 
@@ -127,7 +141,7 @@ class OnkyoDevice(MediaPlayerDevice):
                 self._current_source = '_'.join(
                     [i for i in current_source_tuples[1]])
         self._muted = bool(mute_raw[1] == 'on')
-        self._volume = int(volume_raw[1], 16) / 80.0
+        self._volume = volume_raw[1] / 80.0
 
     @property
     def name(self):
@@ -141,22 +155,22 @@ class OnkyoDevice(MediaPlayerDevice):
 
     @property
     def volume_level(self):
-        """Volume level of the media player (0..1)."""
+        """Return the volume level of the media player (0..1)."""
         return self._volume
 
     @property
     def is_volume_muted(self):
-        """Boolean if volume is currently muted."""
+        """Return boolean indicating mute status."""
         return self._muted
 
     @property
     def supported_features(self):
-        """Flag media player features that are supported."""
+        """Return media player features that are supported."""
         return SUPPORT_ONKYO
 
     @property
     def source(self):
-        """"Return the current input source of the device."""
+        """Return the current input source of the device."""
         return self._current_source
 
     @property
@@ -165,7 +179,7 @@ class OnkyoDevice(MediaPlayerDevice):
         return self._source_list
 
     def turn_off(self):
-        """Turn off media player."""
+        """Turn the media player off."""
         self.command('system-power standby')
 
     def set_volume_level(self, volume):
@@ -188,3 +202,68 @@ class OnkyoDevice(MediaPlayerDevice):
         if source in self._source_list:
             source = self._reverse_mapping[source]
         self.command('input-selector {}'.format(source))
+
+
+class OnkyoDeviceZone2(OnkyoDevice):
+    """Representation of an Onkyo device's zone 2."""
+
+    def update(self):
+        """Get the latest state from the device."""
+        status = self.command('zone2.power=query')
+
+        if not status:
+            return
+        if status[1] == 'on':
+            self._pwstate = STATE_ON
+        else:
+            self._pwstate = STATE_OFF
+            return
+
+        volume_raw = self.command('zone2.volume=query')
+        mute_raw = self.command('zone2.muting=query')
+        current_source_raw = self.command('zone2.selector=query')
+
+        if not (volume_raw and mute_raw and current_source_raw):
+            return
+
+        # eiscp can return string or tuple. Make everything tuples.
+        if isinstance(current_source_raw[1], str):
+            current_source_tuples = \
+                (current_source_raw[0], (current_source_raw[1],))
+        else:
+            current_source_tuples = current_source_raw
+
+        for source in current_source_tuples[1]:
+            if source in self._source_mapping:
+                self._current_source = self._source_mapping[source]
+                break
+            else:
+                self._current_source = '_'.join(
+                    [i for i in current_source_tuples[1]])
+        self._muted = bool(mute_raw[1] == 'on')
+        self._volume = volume_raw[1] / 80.0
+
+    def turn_off(self):
+        """Turn the media player off."""
+        self.command('zone2.power=standby')
+
+    def set_volume_level(self, volume):
+        """Set volume level, input is range 0..1. Onkyo ranges from 1-80."""
+        self.command('zone2.volume={}'.format(int(volume*80)))
+
+    def mute_volume(self, mute):
+        """Mute (true) or unmute (false) media player."""
+        if mute:
+            self.command('zone2.muting=on')
+        else:
+            self.command('zone2.muting=off')
+
+    def turn_on(self):
+        """Turn the media player on."""
+        self.command('zone2.power=on')
+
+    def select_source(self, source):
+        """Set the input source."""
+        if source in self._source_list:
+            source = self._reverse_mapping[source]
+        self.command('zone2.selector={}'.format(source))

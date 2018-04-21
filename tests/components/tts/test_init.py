@@ -2,8 +2,10 @@
 import ctypes
 import os
 import shutil
+import json
 from unittest.mock import patch, PropertyMock
 
+import pytest
 import requests
 
 import homeassistant.components.http as http
@@ -17,6 +19,14 @@ from homeassistant.setup import setup_component
 from tests.common import (
     get_test_home_assistant, get_test_instance_port, assert_setup_component,
     mock_service)
+
+
+@pytest.fixture(autouse=True)
+def mutagen_mock():
+    """Mock writing tags."""
+    with patch('homeassistant.components.tts.SpeechManager.write_tags',
+               side_effect=lambda *args: args[1]):
+        yield
 
 
 class TestTTS(object):
@@ -344,7 +354,7 @@ class TestTTS(object):
         demo_data = tts.SpeechManager.write_tags(
             "265944c108cbb00b2a621be5930513e03a0bb2cd_en_-_demo.mp3",
             demo_data, self.demo_provider,
-            "I person is on front of your door.", 'en', None)
+            "AI person is in front of your door.", 'en', None)
         assert req.status_code == 200
         assert req.content == demo_data
 
@@ -553,3 +563,46 @@ class TestTTS(object):
         req = requests.get(url)
         assert req.status_code == 200
         assert req.content == demo_data
+
+    def test_setup_component_and_web_get_url(self):
+        """Setup the demo platform and receive wrong file from web."""
+        config = {
+            tts.DOMAIN: {
+                'platform': 'demo',
+            }
+        }
+
+        with assert_setup_component(1, tts.DOMAIN):
+            setup_component(self.hass, tts.DOMAIN, config)
+
+        self.hass.start()
+
+        url = ("{}/api/tts_get_url").format(self.hass.config.api.base_url)
+        data = {'platform': 'demo',
+                'message': "I person is on front of your door."}
+
+        req = requests.post(url, data=json.dumps(data))
+        assert req.status_code == 200
+        response = json.loads(req.text)
+        assert response.get('url') == (("{}/api/tts_proxy/265944c108cbb00b2a62"
+                                        "1be5930513e03a0bb2cd_en_-_demo.mp3")
+                                       .format(self.hass.config.api.base_url))
+
+    def test_setup_component_and_web_get_url_bad_config(self):
+        """Setup the demo platform and receive wrong file from web."""
+        config = {
+            tts.DOMAIN: {
+                'platform': 'demo',
+            }
+        }
+
+        with assert_setup_component(1, tts.DOMAIN):
+            setup_component(self.hass, tts.DOMAIN, config)
+
+        self.hass.start()
+
+        url = ("{}/api/tts_get_url").format(self.hass.config.api.base_url)
+        data = {'message': "I person is on front of your door."}
+
+        req = requests.post(url, data=data)
+        assert req.status_code == 400

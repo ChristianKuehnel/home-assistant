@@ -113,6 +113,7 @@ STATE_TYPES = {
     'HB': 'High Battery',
     'RB': 'Battery Needs Replaced',
     'CHRG': 'Battery Charging',
+    'DISCHRG': 'Battery Discharging',
     'BYPASS': 'Bypass Active',
     'CAL': 'Runtime Calibration',
     'OFF': 'Offline',
@@ -126,16 +127,16 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
     vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-    vol.Optional(CONF_ALIAS, default=None): cv.string,
-    vol.Optional(CONF_USERNAME, default=None): cv.string,
-    vol.Optional(CONF_PASSWORD, default=None): cv.string,
+    vol.Optional(CONF_ALIAS): cv.string,
+    vol.Optional(CONF_USERNAME): cv.string,
+    vol.Optional(CONF_PASSWORD): cv.string,
     vol.Required(CONF_RESOURCES, default=[]):
         vol.All(cv.ensure_list, [vol.In(SENSOR_TYPES)]),
 })
 
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Setup the NUT sensors."""
+    """Set up the NUT sensors."""
     name = config.get(CONF_NAME)
     host = config.get(CONF_HOST)
     port = config.get(CONF_PORT)
@@ -146,7 +147,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     data = PyNUTData(host, port, alias, username, password)
 
     if data.status is None:
-        _LOGGER.error("NUT Sensor has no data, unable to setup.")
+        _LOGGER.error("NUT Sensor has no data, unable to setup")
         return False
 
     _LOGGER.debug('NUT Sensors Available: %s', data.status)
@@ -160,17 +161,17 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
             entities.append(NUTSensor(name, data, sensor_type))
         else:
             _LOGGER.warning(
-                'Sensor type: "%s" does not appear in the NUT status '
-                'output, cannot add.', sensor_type)
+                "Sensor type: %s does not appear in the NUT status "
+                "output, cannot add", sensor_type)
 
     try:
         data.update(no_throttle=True)
     except data.pynuterror as err:
         _LOGGER.error("Failure while testing NUT status retrieval. "
-                      "Cannot continue setup., %s", err)
+                      "Cannot continue setup: %s", err)
         return False
 
-    add_entities(entities)
+    add_entities(entities, True)
 
 
 class NUTSensor(Entity):
@@ -180,9 +181,9 @@ class NUTSensor(Entity):
         """Initialize the sensor."""
         self._data = data
         self.type = sensor_type
-        self._name = name + ' ' + SENSOR_TYPES[sensor_type][0]
+        self._name = "{} {}".format(name, SENSOR_TYPES[sensor_type][0])
         self._unit = SENSOR_TYPES[sensor_type][1]
-        self.update()
+        self._state = None
 
     @property
     def name(self):
@@ -207,7 +208,7 @@ class NUTSensor(Entity):
     @property
     def device_state_attributes(self):
         """Return the sensor attributes."""
-        attr = {}
+        attr = dict()
         attr[ATTR_STATE] = self.opp_state()
         return attr
 
@@ -243,7 +244,7 @@ class PyNUTData(object):
     """
 
     def __init__(self, host, port, alias, username, password):
-        """Initialize the data oject."""
+        """Initialize the data object."""
         from pynut2.nut2 import PyNUTClient, PyNUTError
         self._host = host
         self._port = port
@@ -281,8 +282,8 @@ class PyNUTData(object):
         try:
             return self._client.list_vars(self._alias)
         except (self.pynuterror, ConnectionResetError) as err:
-            _LOGGER.debug("Error getting NUT vars for host %s: %s",
-                          self._host, err)
+            _LOGGER.debug(
+                "Error getting NUT vars for host %s: %s", self._host, err)
             return None
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)

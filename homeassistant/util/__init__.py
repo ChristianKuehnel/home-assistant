@@ -1,4 +1,5 @@
 """Helper methods for various modules."""
+import asyncio
 from collections.abc import MutableSet
 from itertools import chain
 import threading
@@ -12,7 +13,7 @@ from functools import wraps
 from types import MappingProxyType
 from unicodedata import normalize
 
-from typing import Any, Optional, TypeVar, Callable, Sequence, KeysView, Union
+from typing import Any, Optional, TypeVar, Callable, KeysView, Union, Iterable
 
 from .dt import as_local, utcnow
 
@@ -22,6 +23,9 @@ U = TypeVar('U')
 RE_SANITIZE_FILENAME = re.compile(r'(~|\.\.|/|\\)')
 RE_SANITIZE_PATH = re.compile(r'(~|\.(\.)+)')
 RE_SLUGIFY = re.compile(r'[^a-z0-9_]+')
+TBL_SLUGIFY = {
+    ord('ß'): 'ss'
+}
 
 
 def sanitize_filename(filename: str) -> str:
@@ -36,9 +40,13 @@ def sanitize_path(path: str) -> str:
 
 def slugify(text: str) -> str:
     """Slugify a given text."""
-    text = normalize('NFKD', text).lower().replace(" ", "_")
+    text = normalize('NFKD', text)
+    text = text.lower()
+    text = text.replace(" ", "_")
+    text = text.translate(TBL_SLUGIFY)
+    text = RE_SLUGIFY.sub("", text)
 
-    return RE_SLUGIFY.sub("", text)
+    return text
 
 
 def repr_helper(inp: Any) -> str:
@@ -49,12 +57,12 @@ def repr_helper(inp: Any) -> str:
             in inp.items())
     elif isinstance(inp, datetime):
         return as_local(inp).isoformat()
-    else:
-        return str(inp)
+
+    return str(inp)
 
 
 def convert(value: T, to_type: Callable[[T], U],
-            default: Optional[U]=None) -> Optional[U]:
+            default: Optional[U] = None) -> Optional[U]:
     """Convert value to to_type, returns default if fails."""
     try:
         return default if value is None else to_type(value)
@@ -64,7 +72,7 @@ def convert(value: T, to_type: Callable[[T], U],
 
 
 def ensure_unique_string(preferred_string: str, current_strings:
-                         Union[Sequence[str], KeysView[str]]) -> str:
+                         Union[Iterable[str], KeysView[str]]) -> str:
     """Return a string that is not present in current_strings.
 
     If preferred string exists will append _2, _3, ..
@@ -92,7 +100,10 @@ def get_local_ip():
 
         return sock.getsockname()[0]
     except socket.error:
-        return socket.gethostbyname(socket.gethostname())
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            return '127.0.0.1'
     finally:
         sock.close()
 
@@ -154,6 +165,7 @@ class OrderedSet(MutableSet):
         """Check if key is in set."""
         return key in self.map
 
+    # pylint: disable=arguments-differ
     def add(self, key):
         """Add an element to the end of the set."""
         if key not in self.map:
@@ -170,6 +182,7 @@ class OrderedSet(MutableSet):
         curr = begin[1]
         curr[2] = begin[1] = self.map[key] = [key, curr, begin]
 
+    # pylint: disable=arguments-differ
     def discard(self, key):
         """Discard an element from the set."""
         if key in self.map:
@@ -178,7 +191,7 @@ class OrderedSet(MutableSet):
             next_item[1] = prev_item
 
     def __iter__(self):
-        """Iteration of the set."""
+        """Iterate of the set."""
         end = self.end
         curr = end[2]
         while curr is not end:
@@ -217,7 +230,7 @@ class OrderedSet(MutableSet):
         return '%s(%r)' % (self.__class__.__name__, list(self))
 
     def __eq__(self, other):
-        """Return the comparision."""
+        """Return the comparison."""
         if isinstance(other, OrderedSet):
             return len(self) == len(other) and list(self) == list(other)
         return set(self) == set(other)
@@ -248,6 +261,16 @@ class Throttle(object):
 
     def __call__(self, method):
         """Caller for the throttle."""
+        # Make sure we return a coroutine if the method is async.
+        if asyncio.iscoroutinefunction(method):
+            async def throttled_value():
+                """Stand-in function for when real func is being throttled."""
+                return None
+        else:
+            def throttled_value():
+                """Stand-in function for when real func is being throttled."""
+                return None
+
         if self.limit_no_throttle is not None:
             method = Throttle(self.limit_no_throttle)(method)
 
@@ -258,7 +281,7 @@ class Throttle(object):
 
         # We want to be able to differentiate between function and unbound
         # methods (which are considered functions).
-        # All methods have the classname in their qualname seperated by a '.'
+        # All methods have the classname in their qualname separated by a '.'
         # Functions have a '.' in their qualname if defined inline, but will
         # be prefixed by '.<locals>.' so we strip that out.
         is_func = (not hasattr(method, '__self__') and
@@ -266,7 +289,7 @@ class Throttle(object):
 
         @wraps(method)
         def wrapper(*args, **kwargs):
-            """Wrapper that allows wrapped to be called only once per min_time.
+            """Wrap that allows wrapped to be called only once per min_time.
 
             If we cannot acquire the lock, it is running so return None.
             """
@@ -286,18 +309,18 @@ class Throttle(object):
             throttle = host._throttle[id(self)]
 
             if not throttle[0].acquire(False):
-                return None
+                return throttled_value()
 
             # Check if method is never called or no_throttle is given
-            force = not throttle[1] or kwargs.pop('no_throttle', False)
+            force = kwargs.pop('no_throttle', False) or not throttle[1]
 
             try:
                 if force or utcnow() - throttle[1] > self.min_time:
                     result = method(*args, **kwargs)
                     throttle[1] = utcnow()
                     return result
-                else:
-                    return None
+
+                return throttled_value()
             finally:
                 throttle[0].release()
 

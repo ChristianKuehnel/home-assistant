@@ -17,7 +17,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 _LOGGER = logging.getLogger(__name__)
 
-REQUIREMENTS = ['pyloopenergy==0.0.17']
+REQUIREMENTS = ['pyloopenergy==0.0.18']
 
 CONF_ELEC = 'electricity'
 CONF_GAS = 'gas'
@@ -51,19 +51,17 @@ GAS_SCHEMA = vol.Schema({
 })
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_ELEC): vol.All(
-        dict, ELEC_SCHEMA),
-    vol.Optional(CONF_GAS, default={}): vol.All(
-        dict, GAS_SCHEMA)
+    vol.Required(CONF_ELEC): ELEC_SCHEMA,
+    vol.Optional(CONF_GAS): GAS_SCHEMA
 })
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the Loop Energy sensors."""
+    """Set up the Loop Energy sensors."""
     import pyloopenergy
 
     elec_config = config.get(CONF_ELEC)
-    gas_config = config.get(CONF_GAS)
+    gas_config = config.get(CONF_GAS, {})
 
     # pylint: disable=too-many-function-args
     controller = pyloopenergy.LoopEnergy(
@@ -77,7 +75,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     def stop_loopenergy(event):
         """Shutdown loopenergy thread on exit."""
-        _LOGGER.info("Shutting down loopenergy.")
+        _LOGGER.info("Shutting down loopenergy")
         controller.terminate()
 
     hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, stop_loopenergy)

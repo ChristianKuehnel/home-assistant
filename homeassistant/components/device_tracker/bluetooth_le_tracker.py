@@ -1,11 +1,16 @@
-"""Tracking for bluetooth low energy devices."""
+"""
+Tracking for bluetooth low energy devices.
+
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/device_tracker.bluetooth_le_tracker/
+"""
 import logging
 
 import voluptuous as vol
 from homeassistant.helpers.event import track_point_in_utc_time
 from homeassistant.components.device_tracker import (
     YAML_DEVICES, CONF_TRACK_NEW, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL,
-    PLATFORM_SCHEMA, load_config
+    PLATFORM_SCHEMA, load_config, SOURCE_TYPE_BLUETOOTH_LE
 )
 import homeassistant.util.dt as dt_util
 import homeassistant.helpers.config_validation as cv
@@ -16,17 +21,17 @@ REQUIREMENTS = ['gattlib==0.20150805']
 
 BLE_PREFIX = 'BLE_'
 MIN_SEEN_NEW = 5
-CONF_SCAN_DURATION = "scan_duration"
-CONF_BLUETOOTH_DEVICE = "device_id"
+CONF_SCAN_DURATION = 'scan_duration'
+CONF_BLUETOOTH_DEVICE = 'device_id'
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_SCAN_DURATION, default=10): cv.positive_int,
-    vol.Optional(CONF_BLUETOOTH_DEVICE, default="hci0"): cv.string
+    vol.Optional(CONF_BLUETOOTH_DEVICE, default='hci0'): cv.string
 })
 
 
 def setup_scanner(hass, config, see, discovery_info=None):
-    """Setup the Bluetooth LE Scanner."""
+    """Set up the Bluetooth LE Scanner."""
     # pylint: disable=import-error
     from gattlib import DiscoveryService
 
@@ -36,8 +41,8 @@ def setup_scanner(hass, config, see, discovery_info=None):
         """Mark a device as seen."""
         if new_device:
             if address in new_devices:
-                _LOGGER.debug("Seen %s %s times", address,
-                              new_devices[address])
+                _LOGGER.debug(
+                    "Seen %s %s times", address, new_devices[address])
                 new_devices[address] += 1
                 if new_devices[address] >= MIN_SEEN_NEW:
                     _LOGGER.debug("Adding %s to tracked devices", address)
@@ -49,7 +54,8 @@ def setup_scanner(hass, config, see, discovery_info=None):
                 new_devices[address] = 1
                 return
 
-        see(mac=BLE_PREFIX + address, host_name=name.strip("\x00"))
+        see(mac=BLE_PREFIX + address, host_name=name.strip("\x00"),
+            source_type=SOURCE_TYPE_BLUETOOTH_LE)
 
     def discover_ble_devices():
         """Discover Bluetooth LE devices."""
@@ -96,7 +102,7 @@ def setup_scanner(hass, config, see, discovery_info=None):
         """Lookup Bluetooth LE devices and update status."""
         devs = discover_ble_devices()
         for mac in devs_to_track:
-            _LOGGER.debug("Checking " + mac)
+            _LOGGER.debug("Checking %s", mac)
             result = mac in devs
             if not result:
                 # Could not lookup device name

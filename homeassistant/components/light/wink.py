@@ -4,28 +4,31 @@ Support for Wink lights.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/light.wink/
 """
+import asyncio
 import colorsys
 
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_RGB_COLOR, SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR_TEMP, SUPPORT_RGB_COLOR, Light)
-from homeassistant.components.wink import WinkDevice, DOMAIN
+    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_HS_COLOR, SUPPORT_BRIGHTNESS,
+    SUPPORT_COLOR_TEMP, SUPPORT_COLOR, Light)
+from homeassistant.components.wink import DOMAIN, WinkDevice
 from homeassistant.util import color as color_util
 from homeassistant.util.color import \
     color_temperature_mired_to_kelvin as mired_to_kelvin
 
 DEPENDENCIES = ['wink']
 
-SUPPORT_WINK = SUPPORT_BRIGHTNESS | SUPPORT_COLOR_TEMP | SUPPORT_RGB_COLOR
-
-RGB_MODES = ['hsb', 'rgb']
+SUPPORT_WINK = SUPPORT_BRIGHTNESS | SUPPORT_COLOR_TEMP | SUPPORT_COLOR
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the Wink lights."""
+    """Set up the Wink lights."""
     import pywink
 
     for light in pywink.get_light_bulbs():
+        _id = light.object_id() + light.name()
+        if _id not in hass.data[DOMAIN]['unique_ids']:
+            add_devices([WinkLight(light, hass)])
+    for light in pywink.get_light_groups():
         _id = light.object_id() + light.name()
         if _id not in hass.data[DOMAIN]['unique_ids']:
             add_devices([WinkLight(light, hass)])
@@ -34,9 +37,10 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class WinkLight(WinkDevice, Light):
     """Representation of a Wink light."""
 
-    def __init__(self, wink, hass):
-        """Initialize the Wink device."""
-        super().__init__(wink, hass)
+    @asyncio.coroutine
+    def async_added_to_hass(self):
+        """Call when entity is added to hass."""
+        self.hass.data[DOMAIN]['entities']['light'].append(self)
 
     @property
     def is_on(self):
@@ -48,16 +52,13 @@ class WinkLight(WinkDevice, Light):
         """Return the brightness of the light."""
         if self.wink.brightness() is not None:
             return int(self.wink.brightness() * 255)
-        else:
-            return None
+        return None
 
     @property
     def rgb_color(self):
-        """Current bulb color in RGB."""
+        """Define current bulb color in RGB."""
         if not self.wink.supports_hue_saturation():
             return None
-        elif self.wink.color_model() not in RGB_MODES:
-            return False
         else:
             hue = self.wink.color_hue()
             saturation = self.wink.color_saturation()
@@ -71,15 +72,15 @@ class WinkLight(WinkDevice, Light):
             return r_value, g_value, b_value
 
     @property
-    def xy_color(self):
-        """Current bulb color in CIE 1931 (XY) color space."""
+    def hs_color(self):
+        """Define current bulb color."""
         if not self.wink.supports_xy_color():
             return None
-        return self.wink.color_xy()
+        return color_util.color_xy_to_hs(*self.wink.color_xy())
 
     @property
     def color_temp(self):
-        """Current bulb color in degrees Kelvin."""
+        """Define current bulb color in degrees Kelvin."""
         if not self.wink.supports_temperature():
             return None
         return color_util.color_temperature_kelvin_to_mired(
@@ -93,21 +94,17 @@ class WinkLight(WinkDevice, Light):
     def turn_on(self, **kwargs):
         """Turn the switch on."""
         brightness = kwargs.get(ATTR_BRIGHTNESS)
-        rgb_color = kwargs.get(ATTR_RGB_COLOR)
+        hs_color = kwargs.get(ATTR_HS_COLOR)
         color_temp_mired = kwargs.get(ATTR_COLOR_TEMP)
 
-        state_kwargs = {
-        }
+        state_kwargs = {}
 
-        if rgb_color:
+        if hs_color:
             if self.wink.supports_xy_color():
-                xyb = color_util.color_RGB_to_xy(*rgb_color)
-                state_kwargs['color_xy'] = xyb[0], xyb[1]
-                state_kwargs['brightness'] = xyb[2]
-            elif self.wink.supports_hue_saturation():
-                hsv = colorsys.rgb_to_hsv(rgb_color[0],
-                                          rgb_color[1], rgb_color[2])
-                state_kwargs['color_hue_saturation'] = hsv[0], hsv[1]
+                xy_color = color_util.color_hs_to_xy(*hs_color)
+                state_kwargs['color_xy'] = xy_color
+            if self.wink.supports_hue_saturation():
+                state_kwargs['color_hue_saturation'] = hs_color
 
         if color_temp_mired:
             state_kwargs['color_kelvin'] = mired_to_kelvin(color_temp_mired)
@@ -117,6 +114,6 @@ class WinkLight(WinkDevice, Light):
 
         self.wink.set_state(True, **state_kwargs)
 
-    def turn_off(self):
+    def turn_off(self, **kwargs):
         """Turn the switch off."""
         self.wink.set_state(False)

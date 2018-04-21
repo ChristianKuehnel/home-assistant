@@ -44,7 +44,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 @asyncio.coroutine
 # pylint: disable=unused-argument
 def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
-    """Setup a MJPEG IP Camera."""
+    """Set up a MJPEG IP Camera."""
     if discovery_info:
         config = PLATFORM_SCHEMA(discovery_info)
     async_add_devices([MjpegCamera(hass, config)])
@@ -88,8 +88,8 @@ class MjpegCamera(Camera):
         # DigestAuth is not supported
         if self._authentication == HTTP_DIGEST_AUTHENTICATION or \
            self._still_image_url is None:
-            image = yield from self.hass.loop.run_in_executor(
-                None, self.camera_image)
+            image = yield from self.hass.async_add_job(
+                self.camera_image)
             return image
 
         websession = async_get_clientsession(self.hass)
@@ -102,10 +102,10 @@ class MjpegCamera(Camera):
                 return image
 
         except asyncio.TimeoutError:
-            _LOGGER.error('Timeout getting camera image')
+            _LOGGER.error("Timeout getting camera image")
 
         except aiohttp.ClientError as err:
-            _LOGGER.error('Error getting new camera image: %s', err)
+            _LOGGER.error("Error getting new camera image: %s", err)
 
     def camera_image(self):
         """Return a still image response from the camera."""
@@ -119,6 +119,8 @@ class MjpegCamera(Camera):
         else:
             req = requests.get(self._mjpeg_url, stream=True, timeout=10)
 
+        # https://github.com/PyCQA/pylint/issues/1437
+        # pylint: disable=no-member
         with closing(req) as response:
             return extract_image_from_mjpeg(response.iter_content(102400))
 

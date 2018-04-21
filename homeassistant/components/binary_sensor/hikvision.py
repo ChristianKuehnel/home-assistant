@@ -18,7 +18,7 @@ from homeassistant.const import (
     CONF_SSL, EVENT_HOMEASSISTANT_STOP, EVENT_HOMEASSISTANT_START,
     ATTR_LAST_TRIP_TIME, CONF_CUSTOMIZE)
 
-REQUIREMENTS = ['pyhik==0.1.1']
+REQUIREMENTS = ['pyhik==0.1.8']
 _LOGGER = logging.getLogger(__name__)
 
 CONF_IGNORED = 'ignored'
@@ -47,6 +47,10 @@ DEVICE_CLASS_MAP = {
     'PIR Alarm': 'motion',
     'Face Detection': 'motion',
     'Scene Change Detection': 'motion',
+    'I/O': None,
+    'Unattended Baggage': 'motion',
+    'Attended Baggage': 'motion',
+    'Recording Failure': None,
 }
 
 CUSTOMIZE_SCHEMA = vol.Schema({
@@ -55,7 +59,7 @@ CUSTOMIZE_SCHEMA = vol.Schema({
     })
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Optional(CONF_NAME, default=None): cv.string,
+    vol.Optional(CONF_NAME): cv.string,
     vol.Required(CONF_HOST): cv.string,
     vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
     vol.Optional(CONF_SSL, default=False): cv.boolean,
@@ -67,7 +71,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Setup Hikvision binary sensor devices."""
+    """Set up the Hikvision binary sensor devices."""
     name = config.get(CONF_NAME)
     host = config.get(CONF_HOST)
     port = config.get(CONF_PORT)
@@ -77,16 +81,16 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     customize = config.get(CONF_CUSTOMIZE)
 
     if config.get(CONF_SSL):
-        protocol = "https"
+        protocol = 'https'
     else:
-        protocol = "http"
+        protocol = 'http'
 
     url = '{}://{}'.format(protocol, host)
 
     data = HikvisionData(hass, url, port, name, username, password)
 
     if data.sensors is None:
-        _LOGGER.error('Hikvision event stream has no data, unable to setup.')
+        _LOGGER.error("Hikvision event stream has no data, unable to setup")
         return False
 
     entities = []
@@ -104,7 +108,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
             ignore = custom.get(CONF_IGNORED)
             delay = custom.get(CONF_DELAY)
 
-            _LOGGER.debug('Entity: %s - %s, Options - Ignore: %s, Delay: %s',
+            _LOGGER.debug("Entity: %s - %s, Options - Ignore: %s, Delay: %s",
                           data.name, sensor_name, ignore, delay)
             if not ignore:
                 entities.append(HikvisionBinarySensor(
@@ -117,7 +121,7 @@ class HikvisionData(object):
     """Hikvision device event stream object."""
 
     def __init__(self, hass, url, port, name, username, password):
-        """Initialize the data oject."""
+        """Initialize the data object."""
         from pyhik.hikvision import HikCamera
         self._url = url
         self._port = port
@@ -126,8 +130,8 @@ class HikvisionData(object):
         self._password = password
 
         # Establish camera
-        self.camdata = HikCamera(self._url, self._port,
-                                 self._username, self._password)
+        self.camdata = HikCamera(
+            self._url, self._port, self._username, self._password)
 
         if self._name is None:
             self._name = self.camdata.get_name
@@ -210,8 +214,8 @@ class HikvisionBinarySensor(BinarySensorDevice):
 
     @property
     def unique_id(self):
-        """Return an unique ID."""
-        return '{}.{}'.format(self.__class__, self._id)
+        """Return a unique ID."""
+        return self._id
 
     @property
     def is_on(self):
@@ -251,7 +255,7 @@ class HikvisionBinarySensor(BinarySensorDevice):
             # Set timer to wait until updating the state
             def _delay_update(now):
                 """Timer callback for sensor update."""
-                _LOGGER.debug('%s Called delayed (%ssec) update.',
+                _LOGGER.debug("%s Called delayed (%ssec) update",
                               self._name, self._delay)
                 self.schedule_update_ha_state()
                 self._timer = None

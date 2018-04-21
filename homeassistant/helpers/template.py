@@ -1,20 +1,26 @@
-"""Template helper methods for rendering strings with HA data."""
+"""Template helper methods for rendering strings with Home Assistant data."""
 from datetime import datetime
 import json
 import logging
+import math
+import random
 import re
 
 import jinja2
+from jinja2 import contextfilter
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from homeassistant.const import (
-    STATE_UNKNOWN, ATTR_LATITUDE, ATTR_LONGITUDE, MATCH_ALL)
-from homeassistant.core import State
+    ATTR_LATITUDE, ATTR_LONGITUDE, ATTR_UNIT_OF_MEASUREMENT, MATCH_ALL,
+    STATE_UNKNOWN)
+from homeassistant.core import State, valid_entity_id
 from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import location as loc_helper
-from homeassistant.loader import get_component
-from homeassistant.util import convert, dt as dt_util, location as loc_util
-from homeassistant.util.async import run_callback_threadsafe
+from homeassistant.loader import bind_hass, get_component
+from homeassistant.util import convert
+from homeassistant.util import dt as dt_util
+from homeassistant.util import location as loc_util
+from homeassistant.util.async_ import run_callback_threadsafe
 
 _LOGGER = logging.getLogger(__name__)
 _SENTINEL = object()
@@ -22,11 +28,12 @@ DATE_STR_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _RE_NONE_ENTITIES = re.compile(r"distance\(|closest\(", re.I | re.M)
 _RE_GET_ENTITIES = re.compile(
-    r"(?:(?:states\.|(?:is_state|is_state_attr|states)\(.)([\w]+\.[\w]+))",
-    re.I | re.M
+    r"(?:(?:states\.|(?:is_state|is_state_attr|state_attr|states)"
+    r"\((?:[\ \'\"]?))([\w]+\.[\w]+)|([\w]+))", re.I | re.M
 )
 
 
+@bind_hass
 def attach(hass, obj):
     """Recursively attach hass to all template instances in list and dict."""
     if isinstance(obj, list):
@@ -39,14 +46,39 @@ def attach(hass, obj):
         obj.hass = hass
 
 
-def extract_entities(template):
+def render_complex(value, variables=None):
+    """Recursive template creator helper function."""
+    if isinstance(value, list):
+        return [render_complex(item, variables)
+                for item in value]
+    elif isinstance(value, dict):
+        return {key: render_complex(item, variables)
+                for key, item in value.items()}
+    return value.async_render(variables)
+
+
+def extract_entities(template, variables=None):
     """Extract all entities for state_changed listener from template string."""
     if template is None or _RE_NONE_ENTITIES.search(template):
         return MATCH_ALL
 
     extraction = _RE_GET_ENTITIES.findall(template)
-    if len(extraction) > 0:
-        return list(set(extraction))
+    extraction_final = []
+
+    for result in extraction:
+        if result[0] == 'trigger.entity_id' and 'trigger' in variables and \
+           'entity_id' in variables['trigger']:
+            extraction_final.append(variables['trigger']['entity_id'])
+        elif result[0]:
+            extraction_final.append(result[0])
+
+        if variables and result[1] in variables and \
+           isinstance(variables[result[1]], str) and \
+           valid_entity_id(variables[result[1]]):
+            extraction_final.append(variables[result[1]])
+
+    if extraction_final:
+        return list(set(extraction_final))
     return MATCH_ALL
 
 
@@ -54,7 +86,7 @@ class Template(object):
     """Class to hold a template and manage caching and rendering."""
 
     def __init__(self, template, hass=None):
-        """Instantiate a Template."""
+        """Instantiate a template."""
         if not isinstance(template, str):
             raise TypeError('Expected template to be a string')
 
@@ -73,9 +105,9 @@ class Template(object):
         except jinja2.exceptions.TemplateSyntaxError as err:
             raise TemplateError(err)
 
-    def extract_entities(self):
+    def extract_entities(self, variables=None):
         """Extract all entities for state_changed listener."""
-        return extract_entities(self.template)
+        return extract_entities(self.template, variables)
 
     def render(self, variables=None, **kwargs):
         """Render given template."""
@@ -90,7 +122,8 @@ class Template(object):
 
         This method must be run in the event loop.
         """
-        self._ensure_compiled()
+        if self._compiled is None:
+            self._ensure_compiled()
 
         if variables is not None:
             kwargs.update(variables)
@@ -118,7 +151,8 @@ class Template(object):
 
         This method must be run in the event loop.
         """
-        self._ensure_compiled()
+        if self._compiled is None:
+            self._ensure_compiled()
 
         variables = {
             'value': value
@@ -131,26 +165,24 @@ class Template(object):
         try:
             return self._compiled.render(variables).strip()
         except jinja2.TemplateError as ex:
-            _LOGGER.error('Error parsing value: %s (value: %s, template: %s)',
+            _LOGGER.error("Error parsing value: %s (value: %s, template: %s)",
                           ex, value, self.template)
             return value if error_value is _SENTINEL else error_value
 
     def _ensure_compiled(self):
         """Bind a template to a specific hass instance."""
-        if self._compiled is not None:
-            return
-
         self.ensure_valid()
 
         assert self.hass is not None, 'hass variable not set on template'
 
-        location_methods = LocationMethods(self.hass)
+        template_methods = TemplateMethods(self.hass)
 
         global_vars = ENV.make_globals({
-            'closest': location_methods.closest,
-            'distance': location_methods.distance,
+            'closest': template_methods.closest,
+            'distance': template_methods.distance,
             'is_state': self.hass.states.is_state,
-            'is_state_attr': self.hass.states.is_state_attr,
+            'is_state_attr': template_methods.is_state_attr,
+            'state_attr': template_methods.state_attr,
             'states': AllStates(self.hass),
         })
 
@@ -179,8 +211,14 @@ class AllStates(object):
 
     def __iter__(self):
         """Return all states."""
-        return iter(sorted(self._hass.states.async_all(),
-                           key=lambda state: state.entity_id))
+        return iter(
+            _wrap_state(state) for state in
+            sorted(self._hass.states.async_all(),
+                   key=lambda state: state.entity_id))
+
+    def __len__(self):
+        """Return number of states."""
+        return len(self._hass.states.async_entity_ids())
 
     def __call__(self, entity_id):
         """Return the states."""
@@ -198,21 +236,61 @@ class DomainStates(object):
 
     def __getattr__(self, name):
         """Return the states."""
-        return self._hass.states.get('{}.{}'.format(self._domain, name))
+        return _wrap_state(
+            self._hass.states.get('{}.{}'.format(self._domain, name)))
 
     def __iter__(self):
         """Return the iteration over all the states."""
         return iter(sorted(
-            (state for state in self._hass.states.async_all()
+            (_wrap_state(state) for state in self._hass.states.async_all()
              if state.domain == self._domain),
             key=lambda state: state.entity_id))
 
+    def __len__(self):
+        """Return number of states."""
+        return len(self._hass.states.async_entity_ids(self._domain))
 
-class LocationMethods(object):
-    """Class to expose distance helpers to templates."""
+
+class TemplateState(State):
+    """Class to represent a state object in a template."""
+
+    # Inheritance is done so functions that check against State keep working
+    # pylint: disable=super-init-not-called
+    def __init__(self, state):
+        """Initialize template state."""
+        self._state = state
+
+    @property
+    def state_with_unit(self):
+        """Return the state concatenated with the unit if available."""
+        state = object.__getattribute__(self, '_state')
+        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        if unit is None:
+            return state.state
+        return "{} {}".format(state.state, unit)
+
+    def __getattribute__(self, name):
+        """Return an attribute of the state."""
+        if name in TemplateState.__dict__:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, '_state'), name)
+
+    def __repr__(self):
+        """Representation of Template State."""
+        rep = object.__getattribute__(self, '_state').__repr__()
+        return '<template ' + rep[1:]
+
+
+def _wrap_state(state):
+    """Wrap a state."""
+    return None if state is None else TemplateState(state)
+
+
+class TemplateMethods(object):
+    """Class to expose helpers to templates."""
 
     def __init__(self, hass):
-        """Initialize the distance helpers."""
+        """Initialize the helpers."""
         self._hass = hass
 
     def closest(self, *args):
@@ -238,11 +316,11 @@ class LocationMethods(object):
             point_state = self._resolve_state(args[0])
 
             if point_state is None:
-                _LOGGER.warning('Closest:Unable to find state %s', args[0])
+                _LOGGER.warning("Closest:Unable to find state %s", args[0])
                 return None
             elif not loc_helper.has_location(point_state):
                 _LOGGER.warning(
-                    'Closest:State does not contain valid location: %s',
+                    "Closest:State does not contain valid location: %s",
                     point_state)
                 return None
 
@@ -257,7 +335,7 @@ class LocationMethods(object):
 
             if latitude is None or longitude is None:
                 _LOGGER.warning(
-                    'Closest:Received invalid coordinates: %s, %s',
+                    "Closest:Received invalid coordinates: %s, %s",
                     args[0], args[1])
                 return None
 
@@ -276,7 +354,7 @@ class LocationMethods(object):
             states = [self._hass.states.get(entity_id) for entity_id
                       in group.expand_entity_ids(self._hass, [gr_entity_id])]
 
-        return loc_helper.closest(latitude, longitude, states)
+        return _wrap_state(loc_helper.closest(latitude, longitude, states))
 
     def distance(self, *args):
         """Calculate distance.
@@ -297,7 +375,7 @@ class LocationMethods(object):
 
                 if latitude is None or longitude is None:
                     _LOGGER.warning(
-                        'Distance:State does not contains a location: %s',
+                        "Distance:State does not contains a location: %s",
                         value)
                     return None
 
@@ -305,7 +383,7 @@ class LocationMethods(object):
                 # We expect this and next value to be lat&lng
                 if not to_process:
                     _LOGGER.warning(
-                        'Distance:Expected latitude and longitude, got %s',
+                        "Distance:Expected latitude and longitude, got %s",
                         value)
                     return None
 
@@ -314,8 +392,8 @@ class LocationMethods(object):
                 longitude = convert(value_2, float)
 
                 if latitude is None or longitude is None:
-                    _LOGGER.warning('Distance:Unable to process latitude and '
-                                    'longitude: %s, %s', value, value_2)
+                    _LOGGER.warning("Distance:Unable to process latitude and "
+                                    "longitude: %s, %s", value, value_2)
                     return None
 
             locations.append((latitude, longitude))
@@ -325,6 +403,18 @@ class LocationMethods(object):
 
         return self._hass.config.units.length(
             loc_util.distance(*locations[0] + locations[1]), 'm')
+
+    def is_state_attr(self, entity_id, name, value):
+        """Test if a state is a specific attribute."""
+        state_attr = self.state_attr(entity_id, name)
+        return state_attr is not None and state_attr == value
+
+    def state_attr(self, entity_id, name):
+        """Get a specific attribute from a state."""
+        state_obj = self._hass.states.get(entity_id)
+        if state_obj is not None:
+            return state_obj.attributes.get(name)
+        return None
 
     def _resolve_state(self, entity_id_or_state):
         """Return state or entity_id if given."""
@@ -336,7 +426,7 @@ class LocationMethods(object):
 
 
 def forgiving_round(value, precision=0):
-    """Rounding filter that accepts strings."""
+    """Round accepted strings."""
     try:
         value = round(float(value), precision)
         return int(value) if precision == 0 else value
@@ -351,6 +441,46 @@ def multiply(value, amount):
         return float(value) * amount
     except (ValueError, TypeError):
         # If value can't be converted to float
+        return value
+
+
+def logarithm(value, base=math.e):
+    """Filter to get logarithm of the value with a specific base."""
+    try:
+        return math.log(float(value), float(base))
+    except (ValueError, TypeError):
+        return value
+
+
+def sine(value):
+    """Filter to get sine of the value."""
+    try:
+        return math.sin(float(value))
+    except (ValueError, TypeError):
+        return value
+
+
+def cosine(value):
+    """Filter to get cosine of the value."""
+    try:
+        return math.cos(float(value))
+    except (ValueError, TypeError):
+        return value
+
+
+def tangent(value):
+    """Filter to get tangent of the value."""
+    try:
+        return math.tan(float(value))
+    except (ValueError, TypeError):
+        return value
+
+
+def square_root(value):
+    """Filter to get square root of the value."""
+    try:
+        return math.sqrt(float(value))
+    except (ValueError, TypeError):
         return value
 
 
@@ -418,6 +548,49 @@ def forgiving_float(value):
         return value
 
 
+def regex_match(value, find='', ignorecase=False):
+    """Match value using regex."""
+    if not isinstance(value, str):
+        value = str(value)
+    flags = re.I if ignorecase else 0
+    return bool(re.match(find, value, flags))
+
+
+def regex_replace(value='', find='', replace='', ignorecase=False):
+    """Replace using regex."""
+    if not isinstance(value, str):
+        value = str(value)
+    flags = re.I if ignorecase else 0
+    regex = re.compile(find, flags)
+    return regex.sub(replace, value)
+
+
+def regex_search(value, find='', ignorecase=False):
+    """Search using regex."""
+    if not isinstance(value, str):
+        value = str(value)
+    flags = re.I if ignorecase else 0
+    return bool(re.search(find, value, flags))
+
+
+def regex_findall_index(value, find='', index=0, ignorecase=False):
+    """Find all matches using regex and then pick specific match index."""
+    if not isinstance(value, str):
+        value = str(value)
+    flags = re.I if ignorecase else 0
+    return re.findall(find, value, flags)[index]
+
+
+@contextfilter
+def random_every_time(context, values):
+    """Choose a random value.
+
+    Unlike Jinja's random filter,
+    this is context-dependent to avoid caching the chosen value.
+    """
+    return random.choice(values)
+
+
 class TemplateEnvironment(ImmutableSandboxedEnvironment):
     """The Home Assistant template environment."""
 
@@ -429,12 +602,30 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
 ENV = TemplateEnvironment()
 ENV.filters['round'] = forgiving_round
 ENV.filters['multiply'] = multiply
+ENV.filters['log'] = logarithm
+ENV.filters['sin'] = sine
+ENV.filters['cos'] = cosine
+ENV.filters['tan'] = tangent
+ENV.filters['sqrt'] = square_root
 ENV.filters['timestamp_custom'] = timestamp_custom
 ENV.filters['timestamp_local'] = timestamp_local
 ENV.filters['timestamp_utc'] = timestamp_utc
 ENV.filters['is_defined'] = fail_when_undefined
 ENV.filters['max'] = max
 ENV.filters['min'] = min
+ENV.filters['random'] = random_every_time
+ENV.filters['regex_match'] = regex_match
+ENV.filters['regex_replace'] = regex_replace
+ENV.filters['regex_search'] = regex_search
+ENV.filters['regex_findall_index'] = regex_findall_index
+ENV.globals['log'] = logarithm
+ENV.globals['sin'] = sine
+ENV.globals['cos'] = cosine
+ENV.globals['tan'] = tangent
+ENV.globals['sqrt'] = square_root
+ENV.globals['pi'] = math.pi
+ENV.globals['tau'] = math.pi * 2
+ENV.globals['e'] = math.e
 ENV.globals['float'] = forgiving_float
 ENV.globals['now'] = dt_util.now
 ENV.globals['utcnow'] = dt_util.utcnow

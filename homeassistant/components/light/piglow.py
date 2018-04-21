@@ -11,15 +11,16 @@ import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, SUPPORT_BRIGHTNESS, ATTR_RGB_COLOR, SUPPORT_RGB_COLOR,
+    ATTR_BRIGHTNESS, SUPPORT_BRIGHTNESS, ATTR_HS_COLOR, SUPPORT_COLOR,
     Light, PLATFORM_SCHEMA)
 from homeassistant.const import CONF_NAME
+import homeassistant.util.color as color_util
 
 REQUIREMENTS = ['piglow==1.2.4']
 
 _LOGGER = logging.getLogger(__name__)
 
-SUPPORT_PIGLOW = (SUPPORT_BRIGHTNESS | SUPPORT_RGB_COLOR)
+SUPPORT_PIGLOW = (SUPPORT_BRIGHTNESS | SUPPORT_COLOR)
 
 DEFAULT_NAME = 'Piglow'
 
@@ -50,7 +51,7 @@ class PiglowLight(Light):
         self._name = name
         self._is_on = False
         self._brightness = 255
-        self._rgb_color = [255, 255, 255]
+        self._hs_color = [0, 0]
 
     @property
     def name(self):
@@ -59,18 +60,28 @@ class PiglowLight(Light):
 
     @property
     def brightness(self):
-        """Brightness of the light (an integer in the range 1-255)."""
+        """Return the brightness of the light."""
         return self._brightness
 
     @property
-    def rgb_color(self):
+    def hs_color(self):
         """Read back the color of the light."""
-        return self._rgb_color
+        return self._hs_color
 
     @property
     def supported_features(self):
         """Flag supported features."""
         return SUPPORT_PIGLOW
+
+    @property
+    def should_poll(self):
+        """Return if we should poll this device."""
+        return False
+
+    @property
+    def assumed_state(self) -> bool:
+        """Return True if unable to access real state of the entity."""
+        return True
 
     @property
     def is_on(self):
@@ -80,21 +91,25 @@ class PiglowLight(Light):
     def turn_on(self, **kwargs):
         """Instruct the light to turn on."""
         self._piglow.clear()
-        self._brightness = kwargs.get(ATTR_BRIGHTNESS, 255)
-        percent_bright = (self._brightness / 255)
 
-        if ATTR_RGB_COLOR in kwargs:
-            self._rgb_color = kwargs[ATTR_RGB_COLOR]
-            self._piglow.red(int(self._rgb_color[0] * percent_bright))
-            self._piglow.green(int(self._rgb_color[1] * percent_bright))
-            self._piglow.blue(int(self._rgb_color[2] * percent_bright))
-        else:
-            self._piglow.all(self._brightness)
+        if ATTR_BRIGHTNESS in kwargs:
+            self._brightness = kwargs[ATTR_BRIGHTNESS]
+
+        if ATTR_HS_COLOR in kwargs:
+            self._hs_color = kwargs[ATTR_HS_COLOR]
+
+        rgb = color_util.color_hsv_to_RGB(
+            self._hs_color[0], self._hs_color[1], self._brightness / 255 * 100)
+        self._piglow.red(rgb[0])
+        self._piglow.green(rgb[1])
+        self._piglow.blue(rgb[2])
         self._piglow.show()
         self._is_on = True
+        self.schedule_update_ha_state()
 
     def turn_off(self, **kwargs):
         """Instruct the light to turn off."""
         self._piglow.clear()
         self._piglow.show()
         self._is_on = False
+        self.schedule_update_ha_state()

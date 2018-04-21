@@ -52,12 +52,13 @@ class TestGoogle(unittest.TestCase):
         }
 
         calendar_info = google.get_calendar_info(self.hass, calendar)
-        self.assertEquals(calendar_info, {
+        self.assertEqual(calendar_info, {
             'cal_id': 'qwertyuiopasdfghjklzxcvbnm@import.calendar.google.com',
             'entities': [{
                 'device_id': 'we_are_we_are_a_test_calendar',
                 'name': 'We are, we are, a... Test Calendar',
                 'track': True,
+                'ignore_availability': True,
             }]
         })
 
@@ -80,7 +81,7 @@ class TestGoogle(unittest.TestCase):
         # }
 
         # self.assertIsInstance(self.hass.data[google.DATA_INDEX], dict)
-        # self.assertEquals(self.hass.data[google.DATA_INDEX], {})
+        # self.assertEqual(self.hass.data[google.DATA_INDEX], {})
 
         calendar_service = google.GoogleCalendarService(
             self.hass.config.path(google.TOKEN_FILE))

@@ -10,15 +10,11 @@ import logging
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
-from homeassistant.const import (CONF_HOST,
-                                 CONF_USERNAME,
-                                 CONF_PASSWORD)
+from homeassistant.const import CONF_HOST
 from homeassistant.helpers import discovery
 from homeassistant.helpers.entity import Entity
 
-REQUIREMENTS = ['https://github.com/gurumitts/'
-                'pylutron-caseta/archive/v0.2.4.zip#'
-                'pylutron-caseta==v0.2.4']
+REQUIREMENTS = ['pylutron-caseta==0.5.0']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,35 +22,49 @@ LUTRON_CASETA_SMARTBRIDGE = 'lutron_smartbridge'
 
 DOMAIN = 'lutron_caseta'
 
+CONF_KEYFILE = 'keyfile'
+CONF_CERTFILE = 'certfile'
+CONF_CA_CERTS = 'ca_certs'
+
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_USERNAME): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string
+        vol.Required(CONF_KEYFILE): cv.string,
+        vol.Required(CONF_CERTFILE): cv.string,
+        vol.Required(CONF_CA_CERTS): cv.string
     })
 }, extra=vol.ALLOW_EXTRA)
 
+LUTRON_CASETA_COMPONENTS = [
+    'light', 'switch', 'cover', 'scene'
+]
 
-def setup(hass, base_config):
-    """Setup the Lutron component."""
+
+@asyncio.coroutine
+def async_setup(hass, base_config):
+    """Set up the Lutron component."""
     from pylutron_caseta.smartbridge import Smartbridge
 
     config = base_config.get(DOMAIN)
-    hass.data[LUTRON_CASETA_SMARTBRIDGE] = Smartbridge(
-        hostname=config[CONF_HOST],
-        username=config[CONF_USERNAME],
-        password=config[CONF_PASSWORD]
-    )
+    keyfile = hass.config.path(config[CONF_KEYFILE])
+    certfile = hass.config.path(config[CONF_CERTFILE])
+    ca_certs = hass.config.path(config[CONF_CA_CERTS])
+    bridge = Smartbridge.create_tls(hostname=config[CONF_HOST],
+                                    keyfile=keyfile,
+                                    certfile=certfile,
+                                    ca_certs=ca_certs)
+    hass.data[LUTRON_CASETA_SMARTBRIDGE] = bridge
+    yield from bridge.connect()
     if not hass.data[LUTRON_CASETA_SMARTBRIDGE].is_connected():
         _LOGGER.error("Unable to connect to Lutron smartbridge at %s",
                       config[CONF_HOST])
         return False
 
-    _LOGGER.info("Connected to Lutron smartbridge at %s",
-                 config[CONF_HOST])
+    _LOGGER.info("Connected to Lutron smartbridge at %s", config[CONF_HOST])
 
-    for component in ('light', 'switch'):
-        discovery.load_platform(hass, component, DOMAIN, {}, config)
+    for component in LUTRON_CASETA_COMPONENTS:
+        hass.async_add_job(discovery.async_load_platform(hass, component,
+                                                         DOMAIN, {}, config))
 
     return True
 
@@ -71,6 +81,7 @@ class LutronCasetaDevice(Entity):
         self._device_id = device["device_id"]
         self._device_type = device["type"]
         self._device_name = device["name"]
+        self._device_zone = device["zone"]
         self._state = None
         self._smartbridge = bridge
 
@@ -78,10 +89,7 @@ class LutronCasetaDevice(Entity):
     def async_added_to_hass(self):
         """Register callbacks."""
         self._smartbridge.add_subscriber(self._device_id,
-                                         self._update_callback)
-
-    def _update_callback(self):
-        self.schedule_update_ha_state()
+                                         self.async_schedule_update_ha_state)
 
     @property
     def name(self):
@@ -91,7 +99,10 @@ class LutronCasetaDevice(Entity):
     @property
     def device_state_attributes(self):
         """Return the state attributes."""
-        attr = {'Lutron Integration ID': self._device_id}
+        attr = {
+            'Device ID': self._device_id,
+            'Zone ID': self._device_zone,
+        }
         return attr
 
     @property

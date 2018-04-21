@@ -1,5 +1,5 @@
 """
-Provide a mock switch platform.
+Provide a mock light platform.
 
 Call init before using it in your tests to ensure clean test data.
 """
@@ -11,7 +11,7 @@ DEVICES = []
 
 
 def init(empty=False):
-    """Initalize the platform with devices."""
+    """Initialize the platform with devices."""
     global DEVICES
 
     DEVICES = [] if empty else [

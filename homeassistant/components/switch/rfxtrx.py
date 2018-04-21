@@ -6,18 +6,35 @@ https://home-assistant.io/components/switch.rfxtrx/
 """
 import logging
 
+import voluptuous as vol
+
 import homeassistant.components.rfxtrx as rfxtrx
-from homeassistant.components.switch import SwitchDevice
+from homeassistant.components.switch import SwitchDevice, PLATFORM_SCHEMA
+from homeassistant.const import CONF_NAME
+from homeassistant.components.rfxtrx import (
+    CONF_AUTOMATIC_ADD, CONF_FIRE_EVENT, DEFAULT_SIGNAL_REPETITIONS,
+    CONF_SIGNAL_REPETITIONS, CONF_DEVICES)
+from homeassistant.helpers import config_validation as cv
 
 DEPENDENCIES = ['rfxtrx']
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = rfxtrx.DEFAULT_SCHEMA
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Optional(CONF_DEVICES, default={}): {
+        cv.string: vol.Schema({
+            vol.Required(CONF_NAME): cv.string,
+            vol.Optional(CONF_FIRE_EVENT, default=False): cv.boolean
+        })
+    },
+    vol.Optional(CONF_AUTOMATIC_ADD, default=False):  cv.boolean,
+    vol.Optional(CONF_SIGNAL_REPETITIONS, default=DEFAULT_SIGNAL_REPETITIONS):
+        vol.Coerce(int),
+})
 
 
 def setup_platform(hass, config, add_devices_callback, discovery_info=None):
-    """Setup the RFXtrx platform."""
+    """Set up the RFXtrx platform."""
     import RFXtrx as rfxtrxmod
 
     # Add switch from config file
@@ -25,7 +42,7 @@ def setup_platform(hass, config, add_devices_callback, discovery_info=None):
     add_devices_callback(switches)
 
     def switch_update(event):
-        """Callback for sensor updates from the RFXtrx gateway."""
+        """Handle sensor updates from the RFXtrx gateway."""
         if not isinstance(event.device, rfxtrxmod.LightingDevice) or \
                 event.device.known_to_be_dimmable or \
                 event.device.known_to_be_rollershutter:
@@ -37,7 +54,7 @@ def setup_platform(hass, config, add_devices_callback, discovery_info=None):
 
         rfxtrx.apply_received_command(event)
 
-    # Subscribe to main rfxtrx events
+    # Subscribe to main RFXtrx events
     if switch_update not in rfxtrx.RECEIVED_EVT_SUBSCRIBERS:
         rfxtrx.RECEIVED_EVT_SUBSCRIBERS.append(switch_update)
 

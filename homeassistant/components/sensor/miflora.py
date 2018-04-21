@@ -12,15 +12,16 @@ from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.helpers.entity import Entity
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import (
-    CONF_MONITORED_CONDITIONS, CONF_NAME, CONF_MAC)
+    CONF_FORCE_UPDATE, CONF_MONITORED_CONDITIONS, CONF_NAME, CONF_MAC
+)
 
-REQUIREMENTS = ['miflora==0.1.16']
+
+REQUIREMENTS = ['miflora==0.4.0']
 
 _LOGGER = logging.getLogger(__name__)
 
 CONF_ADAPTER = 'adapter'
 CONF_CACHE = 'cache_value'
-CONF_FORCE_UPDATE = 'force_update'
 CONF_MEDIAN = 'median'
 CONF_RETRIES = 'retries'
 CONF_TIMEOUT = 'timeout'
@@ -45,7 +46,7 @@ SENSOR_TYPES = {
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_MAC): cv.string,
-    vol.Required(CONF_MONITORED_CONDITIONS):
+    vol.Optional(CONF_MONITORED_CONDITIONS, default=list(SENSOR_TYPES)):
         vol.All(cv.ensure_list, [vol.In(SENSOR_TYPES)]),
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_MEDIAN, default=DEFAULT_MEDIAN): cv.positive_int,
@@ -58,13 +59,21 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the MiFlora sensor."""
+    """Set up the MiFlora sensor."""
     from miflora import miflora_poller
+    try:
+        import bluepy.btle  # noqa: F401 # pylint: disable=unused-variable
+        from btlewrap import BluepyBackend
+        backend = BluepyBackend
+    except ImportError:
+        from btlewrap import GatttoolBackend
+        backend = GatttoolBackend
+    _LOGGER.debug('Miflora is using %s backend.', backend.__name__)
 
     cache = config.get(CONF_CACHE)
     poller = miflora_poller.MiFloraPoller(
         config.get(CONF_MAC), cache_timeout=cache,
-        adapter=config.get(CONF_ADAPTER))
+        adapter=config.get(CONF_ADAPTER), backend=backend)
     force_update = config.get(CONF_FORCE_UPDATE)
     median = config.get(CONF_MEDIAN)
     poller.ble_timeout = config.get(CONF_TIMEOUT)
@@ -77,7 +86,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         unit = SENSOR_TYPES[parameter][1]
 
         prefix = config.get(CONF_NAME)
-        if len(prefix) > 0:
+        if prefix:
             name = "{} {}".format(prefix, name)
 
         devs.append(MiFloraSensor(
@@ -129,12 +138,15 @@ class MiFloraSensor(Entity):
 
         This uses a rolling median over 3 values to filter out outliers.
         """
+        from btlewrap import BluetoothBackendException
         try:
             _LOGGER.debug("Polling data for %s", self.name)
             data = self.poller.parameter_value(self.parameter)
         except IOError as ioerr:
             _LOGGER.info("Polling error %s", ioerr)
-            data = None
+            return
+        except BluetoothBackendException as bterror:
+            _LOGGER.info("Polling error %s", bterror)
             return
 
         if data is not None:
@@ -145,7 +157,7 @@ class MiFloraSensor(Entity):
                          self.name)
             # Remove old data from median list or set sensor value to None
             # if no data is available anymore
-            if len(self.data) > 0:
+            if self.data:
                 self.data = self.data[1:]
             else:
                 self._state = None

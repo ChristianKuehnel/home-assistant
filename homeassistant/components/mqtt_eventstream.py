@@ -20,12 +20,13 @@ from homeassistant.core import EventOrigin, State
 import homeassistant.helpers.config_validation as cv
 from homeassistant.remote import JSONEncoder
 
-DOMAIN = "mqtt_eventstream"
+DOMAIN = 'mqtt_eventstream'
 DEPENDENCIES = ['mqtt']
 
 CONF_PUBLISH_TOPIC = 'publish_topic'
 CONF_SUBSCRIBE_TOPIC = 'subscribe_topic'
 CONF_PUBLISH_EVENTSTREAM_RECEIVED = 'publish_eventstream_received'
+CONF_IGNORE_EVENT = 'ignore_event'
 
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
@@ -33,17 +34,19 @@ CONFIG_SCHEMA = vol.Schema({
         vol.Optional(CONF_SUBSCRIBE_TOPIC): valid_subscribe_topic,
         vol.Optional(CONF_PUBLISH_EVENTSTREAM_RECEIVED, default=False):
             cv.boolean,
+        vol.Optional(CONF_IGNORE_EVENT, default=[]): cv.ensure_list
     }),
 }, extra=vol.ALLOW_EXTRA)
 
 
 @asyncio.coroutine
 def async_setup(hass, config):
-    """Setup the MQTT eventstream component."""
+    """Set up the MQTT eventstream component."""
     mqtt = loader.get_component('mqtt')
     conf = config.get(DOMAIN, {})
     pub_topic = conf.get(CONF_PUBLISH_TOPIC)
     sub_topic = conf.get(CONF_SUBSCRIBE_TOPIC)
+    ignore_event = conf.get(CONF_IGNORE_EVENT)
 
     @callback
     def _event_publisher(event):
@@ -51,6 +54,10 @@ def async_setup(hass, config):
         if event.origin != EventOrigin.local:
             return
         if event.event_type == EVENT_TIME_CHANGED:
+            return
+
+        # User-defined events to ignore
+        if event.event_type in ignore_event:
             return
 
         # Filter out the events that were triggered by publishing

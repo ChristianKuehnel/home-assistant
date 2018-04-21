@@ -7,30 +7,29 @@ https://home-assistant.io/components/image_processing/
 import asyncio
 from datetime import timedelta
 import logging
-import os
 
 import voluptuous as vol
 
-from homeassistant.config import load_yaml_config_file
+import homeassistant.helpers.config_validation as cv
 from homeassistant.const import (
     ATTR_ENTITY_ID, CONF_NAME, CONF_ENTITY_ID)
 from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
+from homeassistant.loader import bind_hass
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.loader import get_component
 
+_LOGGER = logging.getLogger(__name__)
 
 DOMAIN = 'image_processing'
 DEPENDENCIES = ['camera']
 
-_LOGGER = logging.getLogger(__name__)
-
 SCAN_INTERVAL = timedelta(seconds=10)
 
 DEVICE_CLASSES = [
-    'alpr',        # automatic license plate recognition
-    'face',        # face
+    'alpr',        # Automatic license plate recognition
+    'face',        # Face
+    'ocr',         # OCR
 ]
 
 SERVICE_SCAN = 'scan'
@@ -44,7 +43,7 @@ DEFAULT_TIMEOUT = 10
 DEFAULT_CONFIDENCE = 80
 
 SOURCE_SCHEMA = vol.Schema({
-    vol.Required(CONF_ENTITY_ID): cv.entity_id,
+    vol.Required(CONF_ENTITY_ID): cv.entity_domain('camera'),
     vol.Optional(CONF_NAME): cv.string,
 })
 
@@ -59,22 +58,19 @@ SERVICE_SCAN_SCHEMA = vol.Schema({
 })
 
 
+@bind_hass
 def scan(hass, entity_id=None):
-    """Force process a image."""
+    """Force process an image."""
     data = {ATTR_ENTITY_ID: entity_id} if entity_id else None
     hass.services.call(DOMAIN, SERVICE_SCAN, data)
 
 
 @asyncio.coroutine
 def async_setup(hass, config):
-    """Setup image processing."""
+    """Set up image processing."""
     component = EntityComponent(_LOGGER, DOMAIN, hass, SCAN_INTERVAL)
 
     yield from component.async_setup(config)
-
-    descriptions = yield from hass.loop.run_in_executor(
-        None, load_yaml_config_file,
-        os.path.join(os.path.dirname(__file__), 'services.yaml'))
 
     @asyncio.coroutine
     def async_scan_service(service):
@@ -88,7 +84,7 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_SCAN, async_scan_service,
-        descriptions.get(SERVICE_SCAN), schema=SERVICE_SCAN_SCHEMA)
+        schema=SERVICE_SCAN_SCHEMA)
 
     return True
 
@@ -117,7 +113,7 @@ class ImageProcessingEntity(Entity):
 
         This method must be run in the event loop and returns a coroutine.
         """
-        return self.hass.loop.run_in_executor(None, self.process_image, image)
+        return self.hass.async_add_job(self.process_image, image)
 
     @asyncio.coroutine
     def async_update(self):

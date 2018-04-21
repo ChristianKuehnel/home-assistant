@@ -15,15 +15,14 @@ from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
 from homeassistant.components import sun
-from homeassistant.components.frontend import register_built_in_panel
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.const import (EVENT_HOMEASSISTANT_START,
-                                 EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED,
-                                 STATE_NOT_HOME, STATE_OFF, STATE_ON,
-                                 ATTR_HIDDEN, HTTP_BAD_REQUEST)
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED,
+    STATE_NOT_HOME, STATE_OFF, STATE_ON, ATTR_HIDDEN, HTTP_BAD_REQUEST,
+    EVENT_LOGBOOK_ENTRY)
 from homeassistant.core import State, split_entity_id, DOMAIN as HA_DOMAIN
 
-DOMAIN = "logbook"
+DOMAIN = 'logbook'
 DEPENDENCIES = ['recorder', 'frontend']
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,9 +47,14 @@ CONFIG_SCHEMA = vol.Schema({
     }),
 }, extra=vol.ALLOW_EXTRA)
 
-EVENT_LOGBOOK_ENTRY = 'logbook_entry'
+ALL_EVENT_TYPES = [
+    EVENT_STATE_CHANGED, EVENT_LOGBOOK_ENTRY,
+    EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP
+]
 
 GROUP_BY_MINUTES = 15
+
+CONTINUOUS_DOMAINS = ['proximity', 'sensor']
 
 ATTR_NAME = 'name'
 ATTR_MESSAGE = 'message'
@@ -84,6 +88,7 @@ def async_log_entry(hass, name, message, domain=None, entity_id=None):
     hass.bus.async_fire(EVENT_LOGBOOK_ENTRY, data)
 
 
+@asyncio.coroutine
 def setup(hass, config):
     """Listen for download events to download files."""
     @callback
@@ -100,11 +105,11 @@ def setup(hass, config):
 
     hass.http.register_view(LogbookView(config.get(DOMAIN, {})))
 
-    register_built_in_panel(hass, 'logbook', 'Logbook',
-                            'mdi:format-list-bulleted-type')
+    yield from hass.components.frontend.async_register_built_in_panel(
+        'logbook', 'logbook', 'mdi:format-list-bulleted-type')
 
-    hass.services.register(DOMAIN, 'log', log_message,
-                           schema=LOG_MESSAGE_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, 'log', log_message, schema=LOG_MESSAGE_SCHEMA)
     return True
 
 
@@ -116,7 +121,7 @@ class LogbookView(HomeAssistantView):
     extra_urls = ['/api/logbook/{datetime}']
 
     def __init__(self, config):
-        """Initilalize the logbook view."""
+        """Initialize the logbook view."""
         self.config = config
 
     @asyncio.coroutine
@@ -134,10 +139,13 @@ class LogbookView(HomeAssistantView):
         end_day = start_day + timedelta(days=1)
         hass = request.app['hass']
 
-        events = yield from hass.loop.run_in_executor(
-            None, _get_events, hass, start_day, end_day)
-        events = _exclude_events(events, self.config)
-        return self.json(humanify(events))
+        def json_events():
+            """Fetch events and generate JSON."""
+            return self.json(list(
+                _get_events(hass, self.config, start_day, end_day)))
+
+        response = yield from hass.async_add_job(json_events)
+        return response
 
 
 class Entry(object):
@@ -164,12 +172,14 @@ class Entry(object):
 
 
 def humanify(events):
-    """Generator that converts a list of events into Entry objects.
+    """Generate a converted list of events into Entry objects.
 
     Will try to group events if possible:
-     - if 2+ sensor updates in GROUP_BY_MINUTES, show last
-     - if home assistant stop and start happen in same minute call it restarted
+    - if 2+ sensor updates in GROUP_BY_MINUTES, show last
+    - if home assistant stop and start happen in same minute call it restarted
     """
+    domain_prefixes = tuple('{}.'.format(dom) for dom in CONTINUOUS_DOMAINS)
+
     # Group events in batches of GROUP_BY_MINUTES
     for _, g_events in groupby(
             events,
@@ -189,10 +199,7 @@ def humanify(events):
             if event.event_type == EVENT_STATE_CHANGED:
                 entity_id = event.data.get('entity_id')
 
-                if entity_id is None:
-                    continue
-
-                if entity_id.startswith('sensor.'):
+                if entity_id.startswith(domain_prefixes):
                     last_sensor_event[entity_id] = event
 
             elif event.event_type == EVENT_HOMEASSISTANT_STOP:
@@ -213,23 +220,15 @@ def humanify(events):
 
                 to_state = State.from_dict(event.data.get('new_state'))
 
-                # If last_changed != last_updated only attributes have changed
-                # we do not report on that yet. Also filter auto groups.
-                if not to_state or \
-                   to_state.last_changed != to_state.last_updated or \
-                   to_state.domain == 'group' and \
-                   to_state.attributes.get('auto', False):
-                    continue
-
                 domain = to_state.domain
 
                 # Skip all but the last sensor state
-                if domain == 'sensor' and \
+                if domain in CONTINUOUS_DOMAINS and \
                    event != last_sensor_event[to_state.entity_id]:
                     continue
 
                 # Don't show continuous sensor value changes in the logbook
-                if domain == 'sensor' and \
+                if domain in CONTINUOUS_DOMAINS and \
                    to_state.attributes.get('unit_of_measurement'):
                     continue
 
@@ -273,22 +272,26 @@ def humanify(events):
                     entity_id)
 
 
-def _get_events(hass, start_day, end_day):
+def _get_events(hass, config, start_day, end_day):
     """Get events for a period of time."""
-    from homeassistant.components.recorder.models import Events
+    from homeassistant.components.recorder.models import Events, States
     from homeassistant.components.recorder.util import (
         execute, session_scope)
 
     with session_scope(hass=hass) as session:
-        query = session.query(Events).order_by(
-            Events.time_fired).filter(
-                (Events.time_fired > start_day) &
-                (Events.time_fired < end_day))
-        return execute(query)
+        query = session.query(Events).order_by(Events.time_fired) \
+            .outerjoin(States, (Events.event_id == States.event_id))  \
+            .filter(Events.event_type.in_(ALL_EVENT_TYPES)) \
+            .filter((Events.time_fired > start_day)
+                    & (Events.time_fired < end_day)) \
+            .filter((States.last_updated == States.last_changed)
+                    | (States.state_id.is_(None)))
+        events = execute(query)
+    return humanify(_exclude_events(events, config))
 
 
 def _exclude_events(events, config):
-    """Get lists of excluded entities and platforms."""
+    """Get list of filtered events."""
     excluded_entities = []
     excluded_domains = []
     included_entities = []
@@ -307,22 +310,40 @@ def _exclude_events(events, config):
         domain, entity_id = None, None
 
         if event.event_type == EVENT_STATE_CHANGED:
-            to_state = State.from_dict(event.data.get('new_state'))
+            entity_id = event.data.get('entity_id')
+
+            if entity_id is None:
+                continue
+
             # Do not report on new entities
             if event.data.get('old_state') is None:
                 continue
 
+            new_state = event.data.get('new_state')
+
             # Do not report on entity removal
-            if not to_state:
+            if not new_state:
+                continue
+
+            attributes = new_state.get('attributes', {})
+
+            # If last_changed != last_updated only attributes have changed
+            # we do not report on that yet.
+            last_changed = new_state.get('last_changed')
+            last_updated = new_state.get('last_updated')
+            if last_changed != last_updated:
+                continue
+
+            domain = split_entity_id(entity_id)[0]
+
+            # Also filter auto groups.
+            if domain == 'group' and attributes.get('auto', False):
                 continue
 
             # exclude entities which are customized hidden
-            hidden = to_state.attributes.get(ATTR_HIDDEN, False)
+            hidden = attributes.get(ATTR_HIDDEN, False)
             if hidden:
                 continue
-
-            domain = to_state.domain
-            entity_id = to_state.entity_id
 
         elif event.event_type == EVENT_LOGBOOK_ENTRY:
             domain = event.data.get(ATTR_DOMAIN)
@@ -366,14 +387,12 @@ def _entry_message_from_state(domain, state):
     if domain == 'device_tracker':
         if state.state == STATE_NOT_HOME:
             return 'is away'
-        else:
-            return 'is at {}'.format(state.state)
+        return 'is at {}'.format(state.state)
 
     elif domain == 'sun':
         if state.state == sun.STATE_ABOVE_HORIZON:
             return 'has risen'
-        else:
-            return 'has set'
+        return 'has set'
 
     elif state.state == STATE_ON:
         # Future: combine groups and its entity entries ?

@@ -1,46 +1,60 @@
-"""tado component to create some sensors for each zone."""
+"""
+Tado component to create some sensors for each zone.
 
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/sensor.tado/
+"""
 import logging
 
 from homeassistant.const import TEMP_CELSIUS
 from homeassistant.helpers.entity import Entity
-from homeassistant.components.tado import (
-    DATA_TADO)
+from homeassistant.components.tado import (DATA_TADO)
+from homeassistant.const import (ATTR_ID)
 
 _LOGGER = logging.getLogger(__name__)
-SENSOR_TYPES = ['temperature', 'humidity', 'power',
-                'link', 'heating', 'tado mode', 'overlay']
+
+ATTR_DATA_ID = 'data_id'
+ATTR_DEVICE = 'device'
+ATTR_NAME = 'name'
+ATTR_ZONE = 'zone'
+
+CLIMATE_SENSOR_TYPES = ['temperature', 'humidity', 'power',
+                        'link', 'heating', 'tado mode', 'overlay']
+
+HOT_WATER_SENSOR_TYPES = ['power', 'link', 'tado mode', 'overlay']
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the sensor platform."""
-    #  get the PyTado object from the hub component
+    """Set up the sensor platform."""
     tado = hass.data[DATA_TADO]
 
     try:
         zones = tado.get_zones()
     except RuntimeError:
         _LOGGER.error("Unable to get zone info from mytado")
-        return False
+        return
 
     sensor_items = []
     for zone in zones:
         if zone['type'] == 'HEATING':
-            for variable in SENSOR_TYPES:
+            for variable in CLIMATE_SENSOR_TYPES:
                 sensor_items.append(create_zone_sensor(
                     tado, zone, zone['name'], zone['id'],
                     variable))
+        elif zone['type'] == 'HOT_WATER':
+            for variable in HOT_WATER_SENSOR_TYPES:
+                sensor_items.append(create_zone_sensor(
+                    tado, zone, zone['name'], zone['id'],
+                    variable
+                ))
 
     me_data = tado.get_me()
     sensor_items.append(create_device_sensor(
         tado, me_data, me_data['homes'][0]['name'],
         me_data['homes'][0]['id'], "tado bridge status"))
 
-    if len(sensor_items) > 0:
+    if sensor_items:
         add_devices(sensor_items, True)
-        return True
-    else:
-        return False
 
 
 def create_zone_sensor(tado, zone, name, zone_id, variable):
@@ -48,10 +62,10 @@ def create_zone_sensor(tado, zone, name, zone_id, variable):
     data_id = 'zone {} {}'.format(name, zone_id)
 
     tado.add_sensor(data_id, {
-        "zone": zone,
-        "name": name,
-        "id": zone_id,
-        "data_id": data_id
+        ATTR_ZONE: zone,
+        ATTR_NAME: name,
+        ATTR_ID: zone_id,
+        ATTR_DATA_ID: data_id
     })
 
     return TadoSensor(tado, name, zone_id, variable, data_id)
@@ -62,10 +76,10 @@ def create_device_sensor(tado, device, name, device_id, variable):
     data_id = 'device {} {}'.format(name, device_id)
 
     tado.add_sensor(data_id, {
-        "device": device,
-        "name": name,
-        "id": device_id,
-        "data_id": data_id
+        ATTR_DEVICE: device,
+        ATTR_NAME: name,
+        ATTR_ID: device_id,
+        ATTR_DATA_ID: data_id
     })
 
     return TadoSensor(tado, name, device_id, variable, data_id)
@@ -75,7 +89,7 @@ class TadoSensor(Entity):
     """Representation of a tado Sensor."""
 
     def __init__(self, store, zone_name, zone_id, zone_variable, data_id):
-        """Initialization of TadoSensor class."""
+        """Initialize of the Tado Sensor."""
         self._store = store
 
         self.zone_name = zone_name
@@ -133,8 +147,7 @@ class TadoSensor(Entity):
         data = self._store.get_data(self._data_id)
 
         if data is None:
-            _LOGGER.debug('Recieved no data for zone %s',
-                          self.zone_name)
+            _LOGGER.debug("Received no data for zone %s", self.zone_name)
             return
 
         unit = TEMP_CELSIUS

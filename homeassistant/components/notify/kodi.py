@@ -19,7 +19,7 @@ from homeassistant.components.notify import (
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 
-REQUIREMENTS = ['jsonrpc-async==0.4']
+REQUIREMENTS = ['jsonrpc-async==0.6']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,9 +51,9 @@ def async_get_service(hass, config, discovery_info=None):
     encryption = config.get(CONF_PROXY_SSL)
 
     if host.startswith('http://') or host.startswith('https://'):
-        host = host.lstrip('http://').lstrip('https://')
+        host = host[host.index('://') + 3:]
         _LOGGER.warning(
-            "Kodi host name should no longer conatin http:// See updated "
+            "Kodi host name should no longer contain http:// See updated "
             "definitions here: "
             "https://home-assistant.io/components/media_player.kodi/")
 
@@ -100,4 +100,4 @@ class KodiNotificationService(BaseNotificationService):
                 title, message, icon, displaytime)
 
         except jsonrpc_async.TransportError:
-            _LOGGER.warning('Unable to fetch Kodi data, Is Kodi online?')
+            _LOGGER.warning("Unable to fetch Kodi data. Is Kodi online?")

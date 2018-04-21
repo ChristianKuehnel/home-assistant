@@ -7,7 +7,6 @@ https://home-assistant.io/components/microsoft_face/
 import asyncio
 import json
 import logging
-import os
 
 import aiohttp
 from aiohttp.hdrs import CONTENT_TYPE
@@ -15,7 +14,6 @@ import async_timeout
 import voluptuous as vol
 
 from homeassistant.const import CONF_API_KEY, CONF_TIMEOUT
-from homeassistant.config import load_yaml_config_file
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
@@ -23,14 +21,16 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.loader import get_component
 from homeassistant.util import slugify
 
+_LOGGER = logging.getLogger(__name__)
+
 DOMAIN = 'microsoft_face'
 DEPENDENCIES = ['camera']
 
-_LOGGER = logging.getLogger(__name__)
-
-FACE_API_URL = "https://westus.api.cognitive.microsoft.com/face/v1.0/{0}"
+FACE_API_URL = "api.cognitive.microsoft.com/face/v1.0/{0}"
 
 DATA_MICROSOFT_FACE = 'microsoft_face'
+
+CONF_AZURE_REGION = 'azure_region'
 
 SERVICE_CREATE_GROUP = 'create_group'
 SERVICE_DELETE_GROUP = 'delete_group'
@@ -49,6 +49,7 @@ DEFAULT_TIMEOUT = 10
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Required(CONF_API_KEY): cv.string,
+        vol.Optional(CONF_AZURE_REGION, default="westus"): cv.string,
         vol.Optional(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): cv.positive_int,
     }),
 }, extra=vol.ALLOW_EXTRA)
@@ -111,10 +112,11 @@ def face_person(hass, group, person, camera_entity):
 
 @asyncio.coroutine
 def async_setup(hass, config):
-    """Setup microsoft face."""
+    """Set up microsoft face."""
     entities = {}
     face = MicrosoftFace(
         hass,
+        config[DOMAIN].get(CONF_AZURE_REGION),
         config[DOMAIN].get(CONF_API_KEY),
         config[DOMAIN].get(CONF_TIMEOUT),
         entities
@@ -128,10 +130,6 @@ def async_setup(hass, config):
         return False
 
     hass.data[DATA_MICROSOFT_FACE] = face
-
-    descriptions = yield from hass.loop.run_in_executor(
-        None, load_yaml_config_file,
-        os.path.join(os.path.dirname(__file__), 'services.yaml'))
 
     @asyncio.coroutine
     def async_create_group(service):
@@ -151,7 +149,6 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_CREATE_GROUP, async_create_group,
-        descriptions[DOMAIN].get(SERVICE_CREATE_GROUP),
         schema=SCHEMA_GROUP_SERVICE)
 
     @asyncio.coroutine
@@ -164,13 +161,12 @@ def async_setup(hass, config):
             face.store.pop(g_id)
 
             entity = entities.pop(g_id)
-            yield from entity.async_remove()
+            hass.states.async_remove(entity.entity_id)
         except HomeAssistantError as err:
             _LOGGER.error("Can't delete group '%s' with error: %s", g_id, err)
 
     hass.services.async_register(
         DOMAIN, SERVICE_DELETE_GROUP, async_delete_group,
-        descriptions[DOMAIN].get(SERVICE_DELETE_GROUP),
         schema=SCHEMA_GROUP_SERVICE)
 
     @asyncio.coroutine
@@ -186,7 +182,6 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_TRAIN_GROUP, async_train_group,
-        descriptions[DOMAIN].get(SERVICE_TRAIN_GROUP),
         schema=SCHEMA_TRAIN_SERVICE)
 
     @asyncio.coroutine
@@ -207,7 +202,6 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_CREATE_PERSON, async_create_person,
-        descriptions[DOMAIN].get(SERVICE_CREATE_PERSON),
         schema=SCHEMA_PERSON_SERVICE)
 
     @asyncio.coroutine
@@ -228,7 +222,6 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_DELETE_PERSON, async_delete_person,
-        descriptions[DOMAIN].get(SERVICE_DELETE_PERSON),
         schema=SCHEMA_PERSON_SERVICE)
 
     @asyncio.coroutine
@@ -255,7 +248,6 @@ def async_setup(hass, config):
 
     hass.services.async_register(
         DOMAIN, SERVICE_FACE_PERSON, async_face_person,
-        descriptions[DOMAIN].get(SERVICE_FACE_PERSON),
         schema=SCHEMA_FACE_SERVICE)
 
     return True
@@ -304,12 +296,13 @@ class MicrosoftFaceGroupEntity(Entity):
 class MicrosoftFace(object):
     """Microsoft Face api for HomeAssistant."""
 
-    def __init__(self, hass, api_key, timeout, entities):
+    def __init__(self, hass, server_loc, api_key, timeout, entities):
         """Initialize Microsoft Face api."""
         self.hass = hass
         self.websession = async_get_clientsession(hass)
         self.timeout = timeout
         self._api_key = api_key
+        self._server_url = "https://{0}.{1}".format(server_loc, FACE_API_URL)
         self._store = {}
         self._entities = entities
 
@@ -344,9 +337,9 @@ class MicrosoftFace(object):
     @asyncio.coroutine
     def call_api(self, method, function, data=None, binary=False,
                  params=None):
-        """Make a api call."""
+        """Make an api call."""
         headers = {"Ocp-Apim-Subscription-Key": self._api_key}
-        url = FACE_API_URL.format(function)
+        url = self._server_url.format(function)
 
         payload = None
         if binary:

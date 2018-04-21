@@ -4,14 +4,16 @@ Support for Wink sensors.
 For more details about this platform, please refer to the documentation at
 at https://home-assistant.io/components/sensor.wink/
 """
+import asyncio
 import logging
 
+from homeassistant.components.wink import DOMAIN, WinkDevice
 from homeassistant.const import TEMP_CELSIUS
 from homeassistant.helpers.entity import Entity
-from homeassistant.components.wink import WinkDevice, DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 DEPENDENCIES = ['wink']
-_LOGGER = logging.getLogger(__name__)
 
 SENSOR_TYPES = ['temperature', 'humidity', 'balance', 'proximity']
 
@@ -57,6 +59,11 @@ class WinkSensorDevice(WinkDevice, Entity):
             self._unit_of_measurement = TEMP_CELSIUS
         else:
             self._unit_of_measurement = self.wink.unit()
+
+    @asyncio.coroutine
+    def async_added_to_hass(self):
+        """Call when entity is added to hass."""
+        self.hass.data[DOMAIN]['entities']['sensor'].append(self)
 
     @property
     def state(self):

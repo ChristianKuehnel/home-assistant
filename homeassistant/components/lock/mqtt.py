@@ -12,14 +12,15 @@ import voluptuous as vol
 from homeassistant.core import callback
 from homeassistant.components.lock import LockDevice
 from homeassistant.components.mqtt import (
-    CONF_STATE_TOPIC, CONF_COMMAND_TOPIC, CONF_QOS, CONF_RETAIN)
+    CONF_AVAILABILITY_TOPIC, CONF_STATE_TOPIC, CONF_COMMAND_TOPIC,
+    CONF_PAYLOAD_AVAILABLE, CONF_PAYLOAD_NOT_AVAILABLE, CONF_QOS, CONF_RETAIN,
+    MqttAvailability)
 from homeassistant.const import (
     CONF_NAME, CONF_OPTIMISTIC, CONF_VALUE_TEMPLATE)
 import homeassistant.components.mqtt as mqtt
 import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
-
 
 CONF_PAYLOAD_LOCK = 'payload_lock'
 CONF_PAYLOAD_UNLOCK = 'payload_unlock'
@@ -37,12 +38,15 @@ PLATFORM_SCHEMA = mqtt.MQTT_RW_PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_PAYLOAD_UNLOCK, default=DEFAULT_PAYLOAD_UNLOCK):
         cv.string,
     vol.Optional(CONF_OPTIMISTIC, default=DEFAULT_OPTIMISTIC): cv.boolean,
-})
+}).extend(mqtt.MQTT_AVAILABILITY_SCHEMA.schema)
 
 
 @asyncio.coroutine
 def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
-    """Setup the MQTT lock."""
+    """Set up the MQTT lock."""
+    if discovery_info is not None:
+        config = PLATFORM_SCHEMA(discovery_info)
+
     value_template = config.get(CONF_VALUE_TEMPLATE)
     if value_template is not None:
         value_template.hass = hass
@@ -57,15 +61,21 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         config.get(CONF_PAYLOAD_UNLOCK),
         config.get(CONF_OPTIMISTIC),
         value_template,
+        config.get(CONF_AVAILABILITY_TOPIC),
+        config.get(CONF_PAYLOAD_AVAILABLE),
+        config.get(CONF_PAYLOAD_NOT_AVAILABLE)
     )])
 
 
-class MqttLock(LockDevice):
-    """Represents a lock that can be toggled using MQTT."""
+class MqttLock(MqttAvailability, LockDevice):
+    """Representation of a lock that can be toggled using MQTT."""
 
     def __init__(self, name, state_topic, command_topic, qos, retain,
-                 payload_lock, payload_unlock, optimistic, value_template):
+                 payload_lock, payload_unlock, optimistic, value_template,
+                 availability_topic, payload_available, payload_not_available):
         """Initialize the lock."""
+        super().__init__(availability_topic, qos, payload_available,
+                         payload_not_available)
         self._state = False
         self._name = name
         self._state_topic = state_topic
@@ -79,13 +89,12 @@ class MqttLock(LockDevice):
 
     @asyncio.coroutine
     def async_added_to_hass(self):
-        """Subscribe mqtt events.
+        """Subscribe to MQTT events."""
+        yield from super().async_added_to_hass()
 
-        This method is a coroutine.
-        """
         @callback
         def message_received(topic, payload, qos):
-            """A new MQTT message has been received."""
+            """Handle new MQTT messages."""
             if self._template is not None:
                 payload = self._template.async_render_with_possible_json_value(
                     payload)
@@ -94,7 +103,7 @@ class MqttLock(LockDevice):
             elif payload == self._payload_unlock:
                 self._state = False
 
-            self.hass.async_add_job(self.async_update_ha_state())
+            self.async_schedule_update_ha_state()
 
         if self._state_topic is None:
             # Force into optimistic mode.
@@ -110,7 +119,7 @@ class MqttLock(LockDevice):
 
     @property
     def name(self):
-        """The name of the lock."""
+        """Return the name of the lock."""
         return self._name
 
     @property
@@ -135,7 +144,7 @@ class MqttLock(LockDevice):
         if self._optimistic:
             # Optimistically assume that switch has changed state.
             self._state = True
-            self.hass.async_add_job(self.async_update_ha_state())
+            self.async_schedule_update_ha_state()
 
     @asyncio.coroutine
     def async_unlock(self, **kwargs):
@@ -149,4 +158,4 @@ class MqttLock(LockDevice):
         if self._optimistic:
             # Optimistically assume that switch has changed state.
             self._state = False
-            self.hass.async_add_job(self.async_update_ha_state())
+            self.async_schedule_update_ha_state()

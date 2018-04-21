@@ -44,7 +44,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the Nest Sensor."""
+    """Set up the Nest Sensor."""
     if discovery_info is None:
         return
 
@@ -139,6 +139,11 @@ class NestTempSensor(NestSensor):
     def state(self):
         """Return the state of the sensor."""
         return self._state
+
+    @property
+    def device_class(self):
+        """Return the device class of the sensor."""
+        return 'temperature'
 
     def update(self):
         """Retrieve latest state."""

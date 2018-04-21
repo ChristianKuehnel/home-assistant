@@ -8,12 +8,13 @@ import asyncio
 import logging
 
 import aiohttp
+from aiohttp import hdrs
 import async_timeout
 import voluptuous as vol
 
 from homeassistant.const import (
     CONF_TIMEOUT, CONF_USERNAME, CONF_PASSWORD, CONF_URL, CONF_PAYLOAD,
-    CONF_METHOD)
+    CONF_METHOD, CONF_HEADERS)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 
@@ -31,14 +32,18 @@ SUPPORT_REST_METHODS = [
     'delete',
 ]
 
+CONF_CONTENT_TYPE = 'content_type'
+
 COMMAND_SCHEMA = vol.Schema({
     vol.Required(CONF_URL): cv.template,
     vol.Optional(CONF_METHOD, default=DEFAULT_METHOD):
         vol.All(vol.Lower, vol.In(SUPPORT_REST_METHODS)),
+    vol.Optional(CONF_HEADERS): vol.Schema({cv.string: cv.string}),
     vol.Inclusive(CONF_USERNAME, 'authentication'): cv.string,
     vol.Inclusive(CONF_PASSWORD, 'authentication'): cv.string,
     vol.Optional(CONF_PAYLOAD): cv.template,
     vol.Optional(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): vol.Coerce(int),
+    vol.Optional(CONF_CONTENT_TYPE): cv.string
 })
 
 CONFIG_SCHEMA = vol.Schema({
@@ -50,7 +55,7 @@ CONFIG_SCHEMA = vol.Schema({
 
 @asyncio.coroutine
 def async_setup(hass, config):
-    """Setup the rest_command component."""
+    """Set up the REST command component."""
     websession = async_get_clientsession(hass)
 
     def async_register_rest_command(name, command_config):
@@ -72,6 +77,16 @@ def async_setup(hass, config):
             template_payload = command_config[CONF_PAYLOAD]
             template_payload.hass = hass
 
+        headers = None
+        if CONF_HEADERS in command_config:
+            headers = command_config[CONF_HEADERS]
+
+        if CONF_CONTENT_TYPE in command_config:
+            content_type = command_config[CONF_CONTENT_TYPE]
+            if headers is None:
+                headers = {}
+            headers[hdrs.CONTENT_TYPE] = content_type
+
         @asyncio.coroutine
         def async_service_handler(service):
             """Execute a shell command service."""
@@ -86,7 +101,8 @@ def async_setup(hass, config):
                     request = yield from getattr(websession, method)(
                         template_url.async_render(variables=service.data),
                         data=payload,
-                        auth=auth
+                        auth=auth,
+                        headers=headers
                     )
 
                 if request.status < 400:
